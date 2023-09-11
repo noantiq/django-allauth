@@ -1,3 +1,5 @@
+import json
+
 from django import forms
 from django.utils.translation import gettext_lazy as _
 
@@ -8,6 +10,15 @@ from allauth.core import context, ratelimit
 from allauth.mfa import totp
 from allauth.mfa.adapter import get_adapter
 from allauth.mfa.models import Authenticator
+from allauth.mfa.webauthn import (
+    begin_authentication,
+    begin_registration,
+    complete_authentication,
+    complete_registration,
+    get_credentials,
+    parse_authentication_credential,
+    parse_registration_credential,
+)
 
 
 class AuthenticateForm(forms.Form):
@@ -36,7 +47,9 @@ class AuthenticateForm(forms.Form):
                 )
 
         code = self.cleaned_data["code"]
-        for auth in Authenticator.objects.filter(user=self.user):
+        for auth in Authenticator.objects.filter(user=self.user).exclude(
+            type=Authenticator.Type.WEBAUTHN
+        ):
             if auth.wrap().validate_code(code):
                 self.authenticator = auth
                 ratelimit.clear(context.request, action="login_failed", user=self.user)
@@ -45,6 +58,38 @@ class AuthenticateForm(forms.Form):
 
     def save(self):
         self.authenticator.record_usage()
+
+
+class AuthenticateWebAuthnForm(forms.Form):
+    signed_state = forms.CharField(required=False, widget=forms.HiddenInput)
+    credential = forms.CharField(required=True, widget=forms.HiddenInput)
+
+    def __init__(self, *args, **kwargs):
+        initial = kwargs.setdefault("initial", {})
+        self.user = kwargs.pop("user")
+        self.authentication_data, state = begin_authentication(self.user)
+        initial["signed_state"] = Signer().sign(json.dumps(state))
+        super().__init__(*args, **kwargs)
+
+    def clean_signed_state(self):
+        signed_state = self.cleaned_data["signed_state"]
+        try:
+            return json.loads(Signer().unsign(signed_state))
+        except BadSignature:
+            raise forms.ValidationError("Tampered form.")
+
+    def clean_credential(self):
+        credential = self.cleaned_data["credential"]
+        return parse_authentication_credential(json.loads(credential))
+
+    def clean(self):
+        cleaned_data = super().clean()
+        state = cleaned_data.get("signed_state")
+        if all([cleaned_data["credential"], state]):
+            cleaned_data["authenticator_data"] = complete_authentication(
+                state, get_credentials(self.user), cleaned_data["credential"]
+            )
+        return cleaned_data
 
 
 class ActivateTOTPForm(forms.Form):
@@ -73,3 +118,53 @@ class ActivateTOTPForm(forms.Form):
         except forms.ValidationError as e:
             self.secret = totp.get_totp_secret(regenerate=True)
             raise e
+
+
+class AddWebAuthnForm(forms.Form):
+    name = forms.CharField(required=False)
+    passwordless = forms.BooleanField(
+        label=_("Passwordless"),
+        required=False,
+        help_text=_(
+            "Enabling passwordless operation allows you to sign in using just this key/device, but imposes additional requirements such as biometrics or PIN protection."
+        ),
+    )
+    credential = forms.CharField(required=True, widget=forms.HiddenInput)
+    signed_state = forms.CharField(required=True, widget=forms.HiddenInput)
+
+    def __init__(self, *args, **kwargs):
+        initial = kwargs.setdefault("initial", {})
+        self.user = kwargs.pop("user")
+        self.registration_data, state = begin_registration()
+        initial["signed_state"] = Signer().sign(json.dumps(state))
+        super().__init__(*args, **kwargs)
+
+    def clean_signed_state(self):
+        signed_state = self.cleaned_data["signed_state"]
+        try:
+            return json.loads(Signer().unsign(signed_state))
+        except BadSignature:
+            raise forms.ValidationError("Tampered form.")
+
+    def clean_credential(self):
+        credential = self.cleaned_data["credential"]
+        return parse_registration_credential(json.loads(credential))
+
+    def clean(self):
+        cleaned_data = super().clean()
+        state = cleaned_data.get("signed_state")
+        credential = cleaned_data.get("credential")
+        passwordless = cleaned_data.get("passwordless")
+        if credential:
+            if (
+                passwordless
+                and not credential["attestation_object"].auth_data.is_user_verified()
+            ):
+                self.add_error(
+                    None, _("This key does not support passwordless operation.")
+                )
+        if all([credential, state]):
+            cleaned_data["authenticator_data"] = complete_registration(
+                state, credential
+            )
+        return cleaned_data
