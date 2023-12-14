@@ -8,7 +8,7 @@ msgstr ""
 "Project-Id-Version: \n"
 "Report-Msgid-Bugs-To: \n"
 "POT-Creation-Date: 2023-12-12 13:20-0600\n"
-"PO-Revision-Date: 2023-11-12 20:04+0100\n"
+"PO-Revision-Date: 2023-12-14 22:31+0100\n"
 "Last-Translator: Erik Telepovský <erik@pragmaticmates.com>\n"
 "Language-Team: \n"
 "Language: sk\n"
@@ -715,7 +715,7 @@ msgstr "Zmena hesla prebehla úspešne."
 
 #: templates/account/messages/password_set.txt:2
 msgid "Password successfully set."
-msgstr ")Nastavenie hesla bolo úspešné."
+msgstr "Nastavenie hesla bolo úspešné."
 
 #: templates/account/messages/primary_email_set.txt:2
 msgid "Primary email address set."
